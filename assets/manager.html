@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Claude Code 对话历史</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html {
+            height: 100%;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            transition: background-color 0.3s, color 0.3s;
+        }
+
+        /* Light mode */
+        body.light-mode {
+            --bg-primary: #ffffff;
+            --bg-secondary: #f9fafb;
+            --bg-tertiary: #f3f4f6;
+            --text-primary: #111827;
+            --text-secondary: #6b7280;
+            --border-color: #e5e7eb;
+            --user-bubble: #ffffff;
+            --assistant-bubble: #dcfce7;
+        }
+
+        /* Dark mode */
+        body.dark-mode {
+            --bg-primary: #1a1a2e;
+            --bg-secondary: #16162a;
+            --bg-tertiary: #0f0f1a;
+            --text-primary: #e5e7eb;
+            --text-secondary: #9ca3af;
+            --border-color: #374151;
+            --user-bubble: #2a2a3e;
+            --assistant-bubble: #1e3a2f;
+        }
+
+        body {
+            background-color: var(--bg-secondary);
+            color: var(--text-primary);
+        }
+
+        .scrollable {
+            overflow-y: auto;
+            overflow-x: hidden;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .scrollable::-webkit-scrollbar {
+            width: 6px;
+        }
+
+        .scrollable::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        .scrollable::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 3px;
+        }
+
+        .scrollable::-webkit-scrollbar-thumb:hover {
+            background: var(--text-secondary);
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 320px;
+            min-width: 320px;
+            transition: width 0.3s, min-width 0.3s;
+        }
+
+        .sidebar.collapsed {
+            width: 0;
+            min-width: 0;
+            overflow: hidden;
+        }
+
+        /* Message bubbles */
+        .message-bubble {
+            border-radius: 12px;
+            padding: 12px 16px;
+            max-width: 70%;
+            position: relative;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+
+        .message-bubble.user {
+            background-color: var(--user-bubble);
+            border: 1px solid var(--border-color);
+        }
+
+        .message-bubble.assistant {
+            background-color: var(--assistant-bubble);
+            border: 1px solid var(--border-color);
+        }
+
+        /* Tool call section */
+        .tool-call {
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 8px 12px;
+            margin: 8px 0;
+            font-family: monospace;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .tool-call:hover {
+            opacity: 0.8;
+        }
+
+        .tool-call.collapsed .tool-content {
+            display: none;
+        }
+
+        .tool-call-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 500;
+        }
+
+        .tool-call-toggle {
+            margin-left: auto;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        /* Copy button */
+        .copy-btn {
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .message-bubble:hover .copy-btn,
+        .tool-call:hover .copy-btn {
+            opacity: 1;
+        }
+
+        /* Search highlight */
+        mark {
+            background-color: #fde047;
+            padding: 2px 4px;
+            border-radius: 2px;
+        }
+
+        /* Theme toggle */
+        .theme-toggle {
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 50%;
+            transition: background-color 0.2s;
+        }
+
+        .theme-toggle:hover {
+            background-color: var(--bg-tertiary);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar {
+                position: absolute;
+                z-index: 50;
+                height: 100%;
+                box-shadow: 2px 0 8px rgba(0,0,0,0.15);
+            }
+        }
+    </style>
+</head>
+<body class="light-mode">
+    <!-- Header -->
+    <header class="flex-shrink-0 px-6 py-3 border-b" style="background-color: var(--bg-primary); border-color: var(--border-color);">
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-4">
+                <button onclick="toggleSidebar()" class="p-2 rounded hover:bg-gray-100 dark-hover:bg-gray-800" style="color: var(--text-secondary);">
+                    <svg id="sidebarIcon" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+                    </svg>
+                </button>
+                <h1 class="text-lg font-bold" style="color: var(--text-primary);">Claude Code 对话历史</h1>
+            </div>
+            <div class="flex items-center gap-2">
+                <span id="conversationCount" class="text-sm" style="color: var(--text-secondary);"></span>
+                <button onclick="refreshData()" class="p-2 rounded hover:bg-gray-100" title="刷新">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color: var(--text-secondary);">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                    </svg>
+                </button>
+                <button onclick="toggleTheme()" class="theme-toggle p-2 rounded" title="切换主题">
+                    <span id="themeIcon" style="font-size: 20px;">🌙</span>
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Container -->
+    <div style="flex: 1; display: flex; overflow: hidden;">
+        <!-- Sidebar -->
+        <aside id="sidebar" class="sidebar scrollable" style="background-color: var(--bg-primary); border-right: 1px solid var(--border-color);">
+            <!-- Search -->
+            <div class="p-4 border-b" style="border-color: var(--border-color);">
+                <input type="text" id="search" placeholder="搜索对话..."
+                    class="w-full border rounded-lg px-4 py-2 text-sm"
+                    style="background-color: var(--bg-secondary); border-color: var(--border-color); color: var(--text-primary);"
+                    oninput="filterList()">
+            </div>
+
+            <!-- Filters -->
+            <div class="p-4 border-b" style="border-color: var(--border-color);">
+                <select id="project" class="w-full border rounded-lg px-3 py-2 text-sm mb-2"
+                    style="background-color: var(--bg-secondary); border-color: var(--border-color); color: var(--text-primary);"
+                    onchange="filterList()">
+                    <option value="">全部项目</option>
+                </select>
+            </div>
+
+            <!-- List -->
+            <div id="list" class="p-2" style="min-height: 200px;"></div>
+        </aside>
+
+        <!-- Detail -->
+        <main style="flex: 1; display: flex; flex-direction: column; overflow: hidden;">
+            <!-- Empty State -->
+            <div id="empty" class="flex-1 flex items-center justify-center">
+                <div class="text-center">
+                    <div class="text-6xl mb-4">💬</div>
+                    <p style="color: var(--text-secondary);">选择左侧对话查看详情</p>
+                </div>
+            </div>
+
+            <!-- Content -->
+            <div id="detail" style="flex: 1; display: none; flex-direction: column; overflow: hidden;">
+                <!-- Header -->
+                <div class="flex-shrink-0 p-6 border-b" style="background-color: var(--bg-primary); border-color: var(--border-color);">
+                    <div class="flex items-center gap-3 mb-2">
+                        <h2 id="title" class="text-xl font-bold flex-1" style="color: var(--text-primary);"></h2>
+                    </div>
+                    <div class="flex items-center gap-3 text-sm" style="color: var(--text-secondary);">
+                        <span id="time"></span>
+                        <span id="project-badge" class="px-2 py-1 rounded-full" style="background-color: var(--bg-tertiary);"></span>
+                        <span id="stats" class="ml-auto"></span>
+                    </div>
+                </div>
+
+                <!-- Scrollable Content -->
+                <div id="content" class="scrollable flex-1" style="padding: 24px; background-color: var(--bg-secondary);"></div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        let data = [];
+        let current = null;
+        let isDarkMode = false;
+        let isSidebarCollapsed = false;
+
+        // Initialize
+        async function init() {
+            loadTheme();
+            await loadData();
+            await loadFilters();
+            updateStats();
+        }
+
+        // Theme
+        function loadTheme() {
+            const saved = localStorage.getItem('theme') || 'light';
+            isDarkMode = saved === 'dark';
+            applyTheme();
+        }
+
+        function toggleTheme() {
+            isDarkMode = !isDarkMode;
+            localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
+            applyTheme();
+        }
+
+        function applyTheme() {
+            document.body.classList.remove('light-mode', 'dark-mode');
+            document.body.classList.add(isDarkMode ? 'dark-mode' : 'light-mode');
+            document.getElementById('themeIcon').textContent = isDarkMode ? '☀️' : '🌙';
+        }
+
+        // Sidebar
+        function toggleSidebar() {
+            isSidebarCollapsed = !isSidebarCollapsed;
+            const sidebar = document.getElementById('sidebar');
+            const icon = document.getElementById('sidebarIcon');
+
+            if (isSidebarCollapsed) {
+                sidebar.classList.add('collapsed');
+                icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>';
+            } else {
+                sidebar.classList.remove('collapsed');
+                icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>';
+            }
+        }
+
+        // Data
+        async function loadData() {
+            try {
+                const res = await fetch('/api/conversations?limit=100');
+                const json = await res.json();
+                data = json.conversations;
+                document.getElementById('conversationCount').textContent = `${json.total} 条对话`;
+                renderList();
+            } catch (e) {
+                console.error('Error loading data:', e);
+            }
+        }
+
+        async function loadFilters() {
+            try {
+                const projects = await fetch('/api/projects').then(r => r.json());
+                const ps = document.getElementById('project');
+                ps.innerHTML = '<option value="">全部项目</option>';
+                projects.forEach(p => {
+                    ps.innerHTML += `<option value="${p}">${p}</option>`;
+                });
+            } catch (e) {
+                console.error('Error loading filters:', e);
+            }
+        }
+
+        function renderList() {
+            const search = document.getElementById('search').value.toLowerCase();
+            const project = document.getElementById('project').value;
+
+            const filtered = data.filter(x => {
+                if (search && !x.title.toLowerCase().includes(search) && !x.content?.toLowerCase().includes(search)) return false;
+                if (project && x.project_name !== project) return false;
+                return true;
+            });
+
+            const list = document.getElementById('list');
+            list.innerHTML = filtered.length === 0
+                ? '<div class="text-center py-8" style="color: var(--text-secondary);">没有找到对话</div>'
+                : filtered.map(x => `
+                    <div onclick="select('${x.id}')"
+                         class="p-3 rounded-lg mb-2 cursor-pointer transition-all ${current && current.id === x.id ? 'bg-blue-500' : ''}"
+                         style="${current && current.id === x.id ? '' : 'background-color: var(--bg-tertiary); hover: var(--bg-secondary);'}">
+                        <div class="font-medium text-sm truncate" style="color: ${current && current.id === x.id ? 'white' : 'var(--text-primary)'};">${esc(x.title)}</div>
+                        <div class="text-xs" style="color: ${current && current.id === x.id ? 'rgba(255,255,255,0.8)' : 'var(--text-secondary)'};">${x.created_formatted} · ${x.message_count || '?'}条消息</div>
+                    </div>
+                `).join('');
+        }
+
+        function filterList() {
+            renderList();
+        }
+
+        async function select(id) {
+            try {
+                const res = await fetch('/api/conversations/session/' + id);
+                const x = await res.json();
+                current = x;
+
+                document.getElementById('empty').style.display = 'none';
+                document.getElementById('detail').style.display = 'flex';
+
+                document.getElementById('title').textContent = x.title;
+                document.getElementById('time').textContent = x.created_formatted;
+                document.getElementById('stats').textContent = `${x.message_count || '?'} 条消息`;
+
+                const projectBadge = document.getElementById('project-badge');
+                if (x.project_name) {
+                    projectBadge.textContent = x.project_name;
+                    projectBadge.style.display = 'inline-block';
+                } else {
+                    projectBadge.style.display = 'none';
+                }
+
+                document.getElementById('content').innerHTML = formatConversation(x.content || '');
+                renderList();
+            } catch (e) {
+                console.error('Error selecting conversation:', e);
+            }
+        }
+
+        function formatConversation(content) {
+            const lines = content.split('\n');
+            let html = '';
+            let currentMsg = '';
+            let currentRole = '';
+
+            for (let line of lines) {
+                if (line.match(/^User \[\d{2}:\d{2}\]:/)) {
+                    if (currentMsg) {
+                        html += formatMessageBlock('user', currentMsg);
+                    }
+                    currentMsg = line;
+                } else if (line.match(/^Assistant \[\d{2}:\d{2}\]:/)) {
+                    if (currentMsg) {
+                        html += formatMessageBlock('assistant', currentMsg);
+                    }
+                    currentMsg = line;
+                } else {
+                    currentMsg += '\n' + line;
+                }
+            }
+
+            if (currentMsg) {
+                html += formatMessageBlock(currentRole, currentMsg);
+            }
+
+            return html;
+        }
+
+        function formatMessageBlock(role, content) {
+            const isUser = role === 'user';
+            const alignClass = isUser ? 'justify-start' : 'justify-end';
+            const avatar = isUser ? '👤' : '🤖';
+            const title = isUser ? 'User' : 'Assistant';
+
+            const timeMatch = content.match(/\[(\d{2}:\d{2})\]/);
+            const time = timeMatch ? timeMatch[1] : '';
+
+            let textContent = content.replace(/^(User|Assistant) \[\d{2}:\d{2}\]:\s*/, '');
+
+            // Check for tool calls
+            if (textContent.includes('Tool Use:') || textContent.includes('Tool Result:')) {
+                return formatToolCall(textContent);
+            }
+
+            const msgId = 'msg-' + Math.random().toString(36).substr(2, 9);
+
+            return `
+                <div class="flex ${alignClass} mb-4">
+                    ${isUser ? `<div class="mr-2 text-xl">${avatar}</div>` : ''}
+                    <div class="message-bubble ${isUser ? 'user' : 'assistant'}">
+                        <div class="flex items-center gap-2 text-xs mb-1" style="color: var(--text-secondary);">
+                            <span class="font-medium">${title}</span>
+                            ${time ? `<span>${time}</span>` : ''}
+                            <button onclick="copyMessage('${msgId}')" class="copy-btn ml-auto text-xs px-2 py-1 rounded" style="background-color: var(--bg-tertiary);">📋</button>
+                        </div>
+                        <div class="text-sm whitespace-pre-wrap leading-relaxed" style="color: var(--text-primary);">${textContent}</div>
+                        <input type="hidden" id="${msgId}" value="${textContent.replace(/"/g, '&quot;')}">
+                    </div>
+                    ${!isUser ? `<div class="ml-2 text-xl">${avatar}</div>` : ''}
+                </div>
+            `;
+        }
+
+        function formatToolCall(content) {
+            const lines = content.split('\n');
+            const toolName = lines[0].replace('Tool Use:', '').replace('Tool Result:', '').trim();
+            const toolContent = lines.slice(1).join('\n').trim();
+            const toolId = 'tool-' + Math.random().toString(36).substr(2, 9);
+
+            return `
+                <div class="tool-call" onclick="toggleTool(this)">
+                    <div class="tool-call-header">
+                        <span>🔧</span>
+                        <span>${esc(toolName)}</span>
+                        <span class="tool-call-toggle">▼</span>
+                        <button onclick="event.stopPropagation(); copyMessage('${toolId}')" class="copy-btn ml-auto text-xs px-2 py-1 rounded" style="background-color: var(--bg-primary);">📋</button>
+                    </div>
+                    <div class="tool-content mt-2" style="color: var(--text-secondary);">
+                        <pre class="whitespace-pre-wrap text-xs">${esc(toolContent)}</pre>
+                        <input type="hidden" id="${toolId}" value="${toolContent.replace(/"/g, '&quot;')}">
+                    </div>
+                </div>
+            `;
+        }
+
+        function toggleTool(el) {
+            el.classList.toggle('collapsed');
+            const toggle = el.querySelector('.tool-call-toggle');
+            toggle.textContent = el.classList.contains('collapsed') ? '▶' : '▼';
+        }
+
+        function copyMessage(msgId) {
+            const input = document.getElementById(msgId);
+            if (input) {
+                const text = input.value;
+                if (navigator.clipboard) {
+                    navigator.clipboard.writeText(text).then(() => {
+                        showToast('✅ 已复制');
+                    }).catch(() => fallbackCopy(text));
+                } else {
+                    fallbackCopy(text);
+                }
+            }
+        }
+
+        function fallbackCopy(text) {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.select();
+            try {
+                document.execCommand('copy');
+                showToast('✅ 已复制');
+            } catch (e) {
+                showToast('❌ 复制失败');
+            }
+            document.body.removeChild(textarea);
+        }
+
+        function showToast(msg) {
+            const toast = document.createElement('div');
+            toast.textContent = msg;
+            toast.style.cssText = 'position: fixed; bottom: 20px; right: 20px; padding: 12px 24px; background: #333; color: white; border-radius: 8px; z-index: 1000;';
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 2000);
+        }
+
+        function updateStats() {
+            // Stats already updated in loadData
+        }
+
+        async function refreshData() {
+            await loadData();
+            showToast('🔄 已刷新');
+        }
+
+        function esc(s) {
+            if (!s) return '';
+            return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        // Auto-init
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            init();
+        }
+    </script>
+</body>
+</html>
