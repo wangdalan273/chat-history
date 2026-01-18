@@ -22,6 +22,13 @@ EXPORTS_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__)
 
+def get_db_connection():
+    """Get database connection."""
+
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
 def init_database():
     """Initialize database with required tables."""
     conn = get_db_connection()
@@ -57,13 +64,6 @@ def init_database():
 # Initialize database on startup
 init_database()
 
-def get_db_connection():
-    """Get database connection."""
-
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
 def format_datetime(iso_string):
     """Format ISO datetime string to China timezone (UTC+8)."""
 
@@ -92,7 +92,7 @@ def scan_jsonl_files():
     return jsonl_files
 
 def generate_smart_title(user_messages):
-    """Generate a smart title by analyzing conversation content."""
+    """Generate a smart title by analyzing the entire conversation context."""
 
     import re
     from collections import Counter
@@ -100,84 +100,135 @@ def generate_smart_title(user_messages):
     if not user_messages:
         return "对话记录"
 
-    # Combine all user messages for analysis
-    all_text = ' '.join(user_messages[:5])  # Analyze first 5 messages
+    # Analyze multiple messages to understand the conversation
+    all_msgs = user_messages[:8]  # Analyze first 8 messages
+    all_text = ' '.join(all_msgs).lower()
 
-    # Define topic keywords that indicate the conversation theme
-    topic_keywords = {
-        '功能开发': ['创建', '开发', '实现', '写', '生成', '添加', 'build', 'create', 'implement'],
-        'Bug修复': ['修复', '解决', '报错', '错误', 'bug', 'error', 'fix', 'debug'],
-        '代码优化': ['优化', '重构', '改进', 'improve', 'optimize', 'refactor'],
-        '问题咨询': ['如何', '怎么', '怎样', '为什么', 'help', 'how', 'question'],
-        '数据分析': ['分析', '统计', '数据', 'analyze', 'data', 'statistics'],
-        '文档编写': ['文档', '说明', '注释', 'document', 'comment', 'readme'],
-        '配置部署': ['配置', '部署', '安装', '环境', 'config', 'deploy', 'setup', 'install'],
-        '界面设计': ['界面', 'UI', '页面', '样式', 'design', 'interface', 'style'],
-        '算法实现': ['算法', '排序', '搜索', 'algorithm', 'sort', 'search'],
-        '数据库': ['数据库', '查询', 'SQL', 'database', 'query', 'table'],
-        'API开发': ['API', '接口', '请求', 'endpoint', 'request', 'interface'],
-        '测试相关': ['测试', 'test', '单元测试', 'unit test'],
+    # Step 1: Detect the main task/topic from the conversation
+    task_indicators = {
+        '添加功能': ['添加', '新增', '增加', '加上', '增加一个'],
+        '修复问题': ['修复', '解决', '修复bug', '解决bug', '报错', '错误'],
+        '优化代码': ['优化', '改进', '重构', '提高性能'],
+        '实现功能': ['实现', '开发', '创建', '编写', '做一个'],
+        '学习使用': ['怎么用', '如何使用', '怎么', '怎样', '如何'],
+        '配置部署': ['部署', '配置', '安装', '设置', '环境'],
+        '数据处理': ['分析', '处理数据', '数据', '统计'],
+        '界面设计': ['界面', '页面', 'ui', '样式', '布局'],
+        'Git操作': ['git', '提交', '推送', '分支', '版本', '仓库'],
+        'API开发': ['api', '接口', '请求', 'endpoint'],
     }
 
-    # Score each topic based on keyword matches
-    topic_scores = {}
-    for topic, keywords in topic_keywords.items():
-        score = 0
-        for keyword in keywords:
-            score += all_text.lower().count(keyword.lower())
+    # Find the dominant task
+    task_scores = {}
+    for task, keywords in task_indicators.items():
+        score = sum(all_text.count(kw) for kw in keywords)
         if score > 0:
-            topic_scores[topic] = score
+            task_scores[task] = score
 
-    # Extract specific nouns/topics mentioned
-    # Look for patterns like "XXX功能", "XXX问题", "XXX项目"
-    specific_topics = []
-    patterns = [
-        r'([^，。！？\n]{2,10})(?:功能|项目|系统|模块)',
-        r'(?:开发|实现|创建|设计)\s*([^，。！？\n]{2,15})',
-        r'([^，。！？\n]{2,10})(?:问题|bug|错误)',
+    # Step 2: Extract the core subject/objects from conversation
+    # Look for nouns and technical terms that appear frequently
+    subjects = []
+
+    # Common tech terms to look for
+    tech_patterns = [
+        r'(?:功能|系统|项目|模块|组件)(?:叫做|名称|是)?[：:]?\s*([a-zA-Z0-9_\u4e00-\u9fa5]{2,15})',
+        r'(?:开发|实现|添加|创建)(?:了|一个|了?个|了?)?\s*([a-zA-Z0-9_\u4e00-\u9fa5]{2,15})',
+        r'([a-zA-Z0-9_]{3,20})(?:功能|模块|系统|类)',
     ]
-    for pattern in patterns:
+
+    for pattern in tech_patterns:
         matches = re.findall(pattern, all_text)
-        specific_topics.extend(matches)
+        subjects.extend(matches)
 
-    # Generate title
-    if topic_scores:
-        # Get the highest scoring topic
-        main_topic = max(topic_scores, key=topic_scores.get)
+    # Extract nouns/phrases from first few messages
+    for msg in all_msgs[:5]:
+        # Look for patterns like "关于XXX" "针对XXX" "XXX相关"
+        about_matches = re.findall(r'(?:关于|针对|处理)([^\n，。]{2,12})', msg)
+        subjects.extend(about_matches)
 
-        # Add specific topic if found
-        if specific_topics:
-            specific = specific_topics[0].strip()
-            if len(specific) > 8:
-                specific = specific[:8] + '...'
-            title = f"{specific} - {main_topic}"
-        else:
-            title = main_topic
-    elif specific_topics:
-        title = specific_topics[0].strip()
-        if len(title) > 15:
-            title = title[:15] + '...'
-    else:
-        # Fallback: extract key phrase from first message
-        first_msg = user_messages[0]
-        # Remove common prefixes
-        for prefix in ['帮我', '请', '可以', '我想要']:
-            if first_msg.startswith(prefix):
-                first_msg = first_msg[len(prefix):].strip()
+        # Look for direct object patterns
+        object_matches = re.findall(r'(?:添加|实现|创建|开发|写|生成|做一个|做个)\s*([^\n，。]{2,15})', msg)
+        subjects.extend(object_matches)
+
+    # Count subject frequency
+    subject_counter = Counter(subjects)
+    if subject_counter:
+        main_subject = subject_counter.most_common(1)[0][0].strip()
+        # Clean up the subject
+        main_subject = main_subject.replace('功能', '').replace('模块', '').replace('系统', '').strip()
+        if len(main_subject) >= 2 and len(main_subject) <= 10:
+            # Combine with task
+            if task_scores:
+                main_task = max(task_scores, key=task_scores.get)
+                return f"{main_subject} - {main_task}"
+            return main_subject
+
+    # Step 3: Analyze the first message more carefully
+    first_msg = user_messages[0].strip()
+
+    # Pattern: User wants to do something
+    want_patterns = [
+        (r'(?:我想|我要|帮我)(?:开发|实现|添加|创建|做一个)?\s*([^\n，。]{2,15})(?:功能|一下)?', 'create'),
+        (r'(?:学习|了解|知道)(?:一下)?([^\n，。]{2,15})', 'learn'),
+        (r'(?:优化|改进)([^\n，。]{2,15})', 'optimize'),
+        (r'(?:修复|解决)(?:[^\n]{0,5})?([^\n，。]{2,15})(?:问题|bug|错误)?', 'fix'),
+    ]
+
+    for pattern, action_type in want_patterns:
+        match = re.search(pattern, first_msg)
+        if match:
+            content = match.group(1).strip()
+            # Clean up
+            content = re.sub(r'^(一个|这个|那个|那个|个|的|了)', '', content).strip()
+
+            if len(content) >= 2 and len(content) <= 12:
+                action_map = {
+                    'create': '开发',
+                    'learn': '学习',
+                    'optimize': '优化',
+                    'fix': '修复',
+                }
+                prefix = action_map.get(action_type, '')
+                if prefix:
+                    return f"{prefix}{content}"
+                return content
+
+    # Step 4: Extract key phrase focusing on technical content
+    # Remove common conversational prefixes
+    clean_first = first_msg
+    for prefix in ['我现在', '我需要', '帮我', '请', '可以', '我想', '我要', '我有个']:
+        if clean_first.startswith(prefix):
+            clean_first = clean_first[len(prefix):].strip()
+            break
+
+    # Look for the meaningful part
+    meaningful_patterns = [
+        r'([^\n，。]{4,20})(?:功能|模块|系统|问题|需求)',
+        r'(?:进行|实现|完成)([^\n，。]{4,16})',
+        r'([^\n，。]{4,18})(?:，|。|$)',
+    ]
+
+    for pattern in meaningful_patterns:
+        match = re.search(pattern, clean_first)
+        if match:
+            phrase = match.group(1).strip()
+            if len(phrase) >= 4 and len(phrase) <= 14:
+                return phrase
+
+    # Step 5: Use dominant task as fallback
+    if task_scores:
+        return max(task_scores, key=task_scores.get)
+
+    # Step 6: Final fallback - first meaningful segment
+    if len(clean_first) > 15:
+        for sep in ['，', '。', '的', '是', '和']:
+            if sep in clean_first[:15]:
+                clean_first = clean_first.split(sep)[0].strip()
                 break
+        else:
+            clean_first = clean_first[:15].strip()
 
-        # Get first meaningful phrase
-        if len(first_msg) > 25:
-            # Try to cut at a natural break
-            for sep in ['，', '。', '！', '？', '\n', ' ', '的', '是']:
-                if sep in first_msg[:25]:
-                    first_msg = first_msg.split(sep)[0].strip()
-                    break
-            else:
-                first_msg = first_msg[:25] + '...'
-        title = first_msg
-
-    return title if title else "对话记录"
+    return clean_first if clean_first else "对话记录"
 
 def parse_jsonl_file(jsonl_file):
     """Parse a jsonl file and extract conversation info."""
@@ -209,13 +260,34 @@ def parse_jsonl_file(jsonl_file):
                         # Handle content as list (structured content)
                         if isinstance(content, list):
                             content_text = []
+                            has_text_content = False
+                            has_only_tools = True
+
                             for item in content:
                                 if isinstance(item, dict):
-                                    if item.get('type') == 'text':
-                                        content_text.append(item.get('text', ''))
+                                    item_type = item.get('type', '')
+                                    # Only extract text content
+                                    if item_type == 'text':
+                                        text_content = item.get('text', '')
+                                        if text_content:
+                                            content_text.append(text_content)
+                                            has_text_content = True
+                                            has_only_tools = False
+                                    # Skip: tool_use, tool_result, thinking, image
+                                    # elif item_type in ['tool_use', 'tool_result', 'thinking', 'image']:
+                                    #     continue
                                 elif isinstance(item, str):
                                     content_text.append(item)
+
+                            # Skip messages that only contain tool results or thinking
+                            if not has_text_content:
+                                continue
+
                             content = '\n'.join(content_text).strip()
+
+                        # Skip empty content or tool-only messages
+                        if not content or role == 'unknown':
+                            continue
 
                         if content:
                             # Get timestamp
@@ -504,7 +576,7 @@ def get_conversation(conv_id):
         'version': row['version'] if row['version'] is not None else 1
     })
 
-@app.route('/api/conversations/session/<session_id>')
+@app.route('/api/conversations/session/<session_id>', methods=['GET'])
 def get_conversation_by_session(session_id):
     """Get conversation by session ID (reads directly from jsonl file)."""
 
@@ -530,13 +602,12 @@ def get_conversation_by_session(session_id):
     starred_sessions = get_db_starred_sessions()
     if session_id in starred_sessions:
         conv['is_starred'] = 1
-        if starred_sessions[session_id]['tags']:
-            conv['tags'] = starred_sessions[session_id]['tags']
-        if starred_sessions[session_id]['title']:
+        conv['tags'] = starred_sessions[session_id].get('tags', '')
+        if starred_sessions[session_id].get('title'):
             conv['title'] = starred_sessions[session_id]['title']
     else:
         conv['is_starred'] = 0
-        conv['tags'] = conv.get('tags', '')
+        conv['tags'] = ''
 
     return jsonify({
         'id': session_id,
@@ -661,13 +732,12 @@ def export_conversation_by_session(session_id):
     starred_sessions = get_db_starred_sessions()
     if session_id in starred_sessions:
         conv['is_starred'] = 1
-        if starred_sessions[session_id]['tags']:
-            conv['tags'] = starred_sessions[session_id]['tags']
-        if starred_sessions[session_id]['title']:
+        conv['tags'] = starred_sessions[session_id].get('tags', '')
+        if starred_sessions[session_id].get('title'):
             conv['title'] = starred_sessions[session_id]['title']
     else:
         conv['is_starred'] = 0
-        conv['tags'] = conv.get('tags', '')
+        conv['tags'] = ''
 
     # Generate Markdown
     md_content = f"# {conv['title']}\n\n"

@@ -432,21 +432,23 @@
             for (let line of lines) {
                 if (line.match(/^User \[\d{2}:\d{2}\]:/)) {
                     if (currentMsg) {
-                        html += formatMessageBlock('user', currentMsg);
+                        html += formatMessageBlock(currentRole || 'user', currentMsg);
                     }
                     currentMsg = line;
+                    currentRole = 'user';
                 } else if (line.match(/^Assistant \[\d{2}:\d{2}\]:/)) {
                     if (currentMsg) {
-                        html += formatMessageBlock('assistant', currentMsg);
+                        html += formatMessageBlock(currentRole || 'assistant', currentMsg);
                     }
                     currentMsg = line;
+                    currentRole = 'assistant';
                 } else {
                     currentMsg += '\n' + line;
                 }
             }
 
             if (currentMsg) {
-                html += formatMessageBlock(currentRole, currentMsg);
+                html += formatMessageBlock(currentRole || 'assistant', currentMsg);
             }
 
             return html;
