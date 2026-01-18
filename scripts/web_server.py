@@ -22,6 +22,41 @@ EXPORTS_DIR.mkdir(exist_ok=True)
 
 app = Flask(__name__)
 
+def init_database():
+    """Initialize database with required tables."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Create conversations table if not exists
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT UNIQUE,
+            title TEXT,
+            summary TEXT,
+            content TEXT,
+            tags TEXT,
+            project_name TEXT,
+            created_at TEXT,
+            message_count INTEGER,
+            is_starred INTEGER DEFAULT 0,
+            version INTEGER DEFAULT 1,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # Add is_starred column if it doesn't exist (for backwards compatibility)
+    cursor.execute("PRAGMA table_info(conversations)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if 'is_starred' not in columns:
+        cursor.execute("ALTER TABLE conversations ADD COLUMN is_starred INTEGER DEFAULT 0")
+
+    conn.commit()
+    conn.close()
+
+# Initialize database on startup
+init_database()
+
 def get_db_connection():
     """Get database connection."""
 
@@ -515,8 +550,149 @@ def get_conversation_by_session(session_id):
         'is_starred': conv['is_starred'],
         'session_id': session_id,
         'version': 1,
-        'message_count': conv['message_count']
+        'message_count': conv['message_count'],
+        'file_path': conv.get('file_path', str(target_file))  # 添加文件路径
     })
+
+@app.route('/api/conversations/session/<session_id>', methods=['PUT'])
+def update_conversation_by_session(session_id):
+    """Update conversation metadata by session ID."""
+    data = request.json
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # Check if conversation exists in database
+    cursor.execute("SELECT id FROM conversations WHERE session_id = ?", (session_id,))
+    row = cursor.fetchone()
+
+    updates = []
+    params = []
+
+    if 'title' in data:
+        updates.append("title = ?")
+        params.append(data['title'])
+
+    if 'summary' in data:
+        updates.append("summary = ?")
+        params.append(data['summary'])
+
+    if 'tags' in data:
+        updates.append("tags = ?")
+        params.append(data['tags'])
+
+    if 'project_name' in data:
+        updates.append("project_name = ?")
+        params.append(data['project_name'])
+
+    if 'is_starred' in data:
+        updates.append("is_starred = ?")
+        params.append(1 if data['is_starred'] else 0)
+
+    if updates:
+        if row:
+            # Update existing record
+            params.append(session_id)
+            cursor.execute(f"UPDATE conversations SET {', '.join(updates)} WHERE session_id = ?", params)
+        else:
+            # Insert new record (for starring)
+            jsonl_files = scan_jsonl_files()
+            target_file = None
+            for jsonl_file in jsonl_files:
+                if jsonl_file.stem == session_id:
+                    target_file = jsonl_file
+                    break
+
+            if target_file:
+                conv = parse_jsonl_file(target_file)
+                if conv:
+                    cursor.execute("""
+                        INSERT INTO conversations (session_id, title, summary, content, project_name, created_at, message_count, is_starred, tags)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        session_id,
+                        data.get('title', conv['title']),
+                        conv.get('summary', ''),
+                        conv['content'],
+                        conv['project_name'],
+                        conv['created_at'],
+                        conv['message_count'],
+                        1 if data.get('is_starred') else 0,
+                        data.get('tags', '')
+                    ))
+
+        conn.commit()
+    conn.close()
+
+    return jsonify({'success': True})
+
+@app.route('/api/conversations/session/<session_id>', methods=['DELETE'])
+def delete_conversation_by_session(session_id):
+    """Delete conversation from database by session ID (source file not deleted)."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM conversations WHERE session_id = ?", (session_id,))
+    deleted_count = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    return jsonify({'success': True, 'deleted_count': deleted_count})
+
+@app.route('/api/export/session/<session_id>')
+def export_conversation_by_session(session_id):
+    """Export conversation as Markdown by session ID."""
+    # Get conversation data
+    jsonl_files = scan_jsonl_files()
+    target_file = None
+
+    for jsonl_file in jsonl_files:
+        if jsonl_file.stem == session_id:
+            target_file = jsonl_file
+            break
+
+    if not target_file:
+        return jsonify({'error': 'Conversation not found'}), 404
+
+    conv = parse_jsonl_file(target_file)
+    if not conv:
+        return jsonify({'error': 'Failed to parse conversation'}), 404
+
+    # Get starred info from database
+    starred_sessions = get_db_starred_sessions()
+    if session_id in starred_sessions:
+        conv['is_starred'] = 1
+        if starred_sessions[session_id]['tags']:
+            conv['tags'] = starred_sessions[session_id]['tags']
+        if starred_sessions[session_id]['title']:
+            conv['title'] = starred_sessions[session_id]['title']
+    else:
+        conv['is_starred'] = 0
+        conv['tags'] = conv.get('tags', '')
+
+    # Generate Markdown
+    md_content = f"# {conv['title']}\n\n"
+    md_content += f"**时间:** {format_datetime(conv['created_at'])}\n"
+    if conv['project_name']:
+        md_content += f"**项目:** {conv['project_name']}\n"
+    if conv['tags']:
+        md_content += f"**标签:** {conv['tags']}\n"
+    md_content += "\n"
+
+    if conv.get('summary'):
+        md_content += f"## 摘要\n\n{conv['summary']}\n\n"
+
+    md_content += f"## 对话内容\n\n{conv['content']}"
+
+    # Save to file
+    from io import BytesIO
+    buffer = BytesIO()
+    buffer.write(md_content.encode('utf-8'))
+    buffer.seek(0)
+
+    filename = f"{conv['title']}_{format_datetime(conv['created_at'])}.md"
+    filename = filename.replace(':', '-').replace(' ', '_').replace('/', '_')
+
+    return send_file(buffer, as_attachment=True, download_name=filename, mimetype='text/markdown')
 
 @app.route('/api/conversations/<int:conv_id>', methods=['DELETE'])
 def delete_conversation(conv_id):

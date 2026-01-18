@@ -257,6 +257,29 @@
                         <span id="project-badge" class="px-2 py-1 rounded-full" style="background-color: var(--bg-tertiary);"></span>
                         <span id="stats" class="ml-auto"></span>
                     </div>
+                    <!-- Action Buttons -->
+                    <div class="flex items-center gap-2 mt-4" id="actionButtons">
+                        <button onclick="toggleStar()" id="starBtn" class="px-3 py-1.5 rounded-lg text-sm flex items-center gap-1 transition-all" style="background-color: var(--bg-tertiary); color: var(--text-primary);" title="收藏">
+                            <span id="starIcon">☆</span>
+                            <span id="starText">收藏</span>
+                        </button>
+                        <button onclick="copyAsMarkdown()" class="px-3 py-1.5 rounded-lg text-sm flex items-center gap-1 transition-all" style="background-color: var(--bg-tertiary); color: var(--text-primary);" title="复制为Markdown">
+                            <span>📋</span>
+                            <span>复制MD</span>
+                        </button>
+                        <button onclick="copyPath()" class="px-3 py-1.5 rounded-lg text-sm flex items-center gap-1 transition-all" style="background-color: var(--bg-tertiary); color: var(--text-primary);" title="复制文件路径">
+                            <span>📁</span>
+                            <span>复制路径</span>
+                        </button>
+                        <button onclick="exportConversation()" class="px-3 py-1.5 rounded-lg text-sm flex items-center gap-1 transition-all" style="background-color: var(--bg-tertiary); color: var(--text-primary);" title="导出为文件">
+                            <span>📤</span>
+                            <span>导出</span>
+                        </button>
+                        <button onclick="deleteConversation()" class="px-3 py-1.5 rounded-lg text-sm flex items-center gap-1 transition-all" style="background-color: #fee2e2; color: #dc2626;" title="删除对话记录">
+                            <span>🗑️</span>
+                            <span>删除</span>
+                        </button>
+                    </div>
                 </div>
 
                 <!-- Scrollable Content -->
@@ -270,6 +293,7 @@
         let current = null;
         let isDarkMode = false;
         let isSidebarCollapsed = false;
+        let currentFilePath = '';  // Store current file path
 
         // Initialize
         async function init() {
@@ -371,6 +395,7 @@
                 const res = await fetch('/api/conversations/session/' + id);
                 const x = await res.json();
                 current = x;
+                currentFilePath = x.file_path || '';  // Save file path
 
                 document.getElementById('empty').style.display = 'none';
                 document.getElementById('detail').style.display = 'flex';
@@ -388,6 +413,10 @@
                 }
 
                 document.getElementById('content').innerHTML = formatConversation(x.content || '');
+
+                // Update star button state
+                updateStarButton(x.is_starred);
+
                 renderList();
             } catch (e) {
                 console.error('Error selecting conversation:', e);
@@ -536,6 +565,138 @@
         function esc(s) {
             if (!s) return '';
             return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        // ============ 新增功能函数 ============
+
+        // 收藏功能
+        function updateStarButton(isStarred) {
+            const starIcon = document.getElementById('starIcon');
+            const starText = document.getElementById('starText');
+            if (isStarred) {
+                starIcon.textContent = '★';
+                starText.textContent = '已收藏';
+            } else {
+                starIcon.textContent = '☆';
+                starText.textContent = '收藏';
+            }
+        }
+
+        async function toggleStar() {
+            if (!current) return;
+
+            const newStarState = current.is_starred ? 0 : 1;
+
+            try {
+                const res = await fetch('/api/conversations/session/' + current.id, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ is_starred: newStarState })
+                });
+
+                if (res.ok) {
+                    current.is_starred = newStarState;
+                    updateStarButton(newStarState);
+                    showToast(newStarState ? '⭐ 已收藏' : '☆ 已取消收藏');
+                    await loadData(); // Refresh list to show updated star status
+                } else {
+                    showToast('❌ 操作失败');
+                }
+            } catch (e) {
+                console.error('Error toggling star:', e);
+                showToast('❌ 操作失败');
+            }
+        }
+
+        // 复制为Markdown
+        async function copyAsMarkdown() {
+            if (!current) return;
+
+            const md = `# ${current.title}\n\n**时间:** ${current.created_formatted}\n${current.project_name ? `**项目:** ${current.project_name}\n` : ''}\n## 对话内容\n\n${current.content}`;
+
+            if (navigator.clipboard) {
+                try {
+                    await navigator.clipboard.writeText(md);
+                    showToast('✅ 已复制为Markdown');
+                } catch (e) {
+                    fallbackCopy(md);
+                }
+            } else {
+                fallbackCopy(md);
+            }
+        }
+
+        // 复制文件路径
+        async function copyPath() {
+            if (!currentFilePath) {
+                showToast('❌ 文件路径不可用');
+                return;
+            }
+
+            if (navigator.clipboard) {
+                try {
+                    await navigator.clipboard.writeText(currentFilePath);
+                    showToast('✅ 路径已复制');
+                } catch (e) {
+                    fallbackCopy(currentFilePath);
+                }
+            } else {
+                fallbackCopy(currentFilePath);
+            }
+        }
+
+        // 导出对话
+        async function exportConversation() {
+            if (!current) return;
+
+            try {
+                const res = await fetch('/api/export/session/' + current.id);
+                if (res.ok) {
+                    const blob = await res.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `${current.title}_${current.created_formatted.replace(/[\/\\:*?"<>|]/g, '-')}.md`;
+                    document.body.appendChild(a);
+                    a.click();
+                    window.URL.revokeObjectURL(url);
+                    document.body.removeChild(a);
+                    showToast('✅ 导出成功');
+                } else {
+                    showToast('❌ 导出失败');
+                }
+            } catch (e) {
+                console.error('Error exporting:', e);
+                showToast('❌ 导出失败');
+            }
+        }
+
+        // 删除对话
+        async function deleteConversation() {
+            if (!current) return;
+
+            if (!confirm('确定要删除这条对话记录吗？\n\n注意：只会删除数据库记录，源文件不会被删除。')) {
+                return;
+            }
+
+            try {
+                const res = await fetch('/api/conversations/session/' + current.id, {
+                    method: 'DELETE'
+                });
+
+                if (res.ok) {
+                    showToast('🗑️ 删除成功');
+                    current = null;
+                    document.getElementById('empty').style.display = 'flex';
+                    document.getElementById('detail').style.display = 'none';
+                    await loadData(); // Refresh list
+                } else {
+                    showToast('❌ 删除失败');
+                }
+            } catch (e) {
+                console.error('Error deleting:', e);
+                showToast('❌ 删除失败');
+            }
         }
 
         // Auto-init
